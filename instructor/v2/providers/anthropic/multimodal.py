@@ -9,24 +9,7 @@ from typing import Any
 from instructor.v2.core.remote import MAX_PDF_BYTES, fetch_remote_content
 
 
-def image_to_anthropic(image: Any) -> dict[str, Any]:
-    if (
-        isinstance(image.source, str)
-        and image.source.startswith(("http://", "https://"))
-        and not image.data
-    ):
-        image.data = image.url_to_base64(image.source)
-    return {
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": image.media_type,
-            "data": image.data,
-        },
-    }
-
-
-def _read_local_pdf(source: Any) -> bytes | None:
+def _read_local_file(source: Any) -> bytes | None:
     """Return the bytes of ``source`` when it points at a readable local file.
 
     Returns ``None`` when the source is not a usable filesystem path — for
@@ -44,6 +27,41 @@ def _read_local_pdf(source: Any) -> bytes | None:
     except OSError:
         # Inline base64 payloads and remote URIs are not valid path names.
         return None
+
+
+_read_local_pdf = _read_local_file
+
+
+def image_to_anthropic(image: Any) -> dict[str, Any]:
+    if not getattr(image, "data", None):
+        if isinstance(image.source, str) and image.source.lower().startswith(
+            ("http://", "https://")
+        ):
+            image.data = image.url_to_base64(image.source)
+        elif (hasattr(image, "is_base64") and image.is_base64(str(image.source))) or (
+            isinstance(image.source, str)
+            and image.source.startswith("data:")
+            and "," in image.source
+        ):
+            image.data = str(image.source).split(",", 1)[1]
+        elif isinstance(image.source, bytes):
+            image.data = base64.b64encode(image.source).decode("utf-8")
+        else:
+            local_bytes = _read_local_file(image.source)
+            if local_bytes is not None:
+                image.data = base64.b64encode(local_bytes).decode("utf-8")
+
+    if not getattr(image, "data", None):
+        raise ValueError("Image data is missing for base64 encoding.")
+
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": image.media_type,
+            "data": image.data,
+        },
+    }
 
 
 def pdf_to_anthropic(pdf: Any) -> dict[str, Any]:

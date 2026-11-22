@@ -21,7 +21,7 @@ from pydantic import BaseModel, ValidationInfo, field_validator
 from instructor.v2.core.client import AsyncInstructor, Instructor
 from instructor.v2.core.errors import ClientError, ModeError, ResponseParsingError
 from instructor.v2.core.mode import Mode
-from instructor.v2.core.multimodal import PDF
+from instructor.v2.core.multimodal import Image, PDF
 from instructor.v2.core.providers import Provider
 from instructor.v2.providers import anthropic as anthropic_provider
 from instructor.v2.providers.anthropic import client as anthropic_client
@@ -254,6 +254,81 @@ def test_anthropic_pdf_without_data_raises_clear_error(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="PDF data is missing"):
         multimodal.pdf_to_anthropic(missing)
+
+
+def test_anthropic_image_reads_data_uri_payload() -> None:
+    """Data-URI image sources decode their base64 payload when data is not pre-populated."""
+    png_bytes = bytes.fromhex("89504e470d0a1a0a") + b"\x00" * 32
+    expected = base64.b64encode(png_bytes).decode("utf-8")
+    uri = f"data:image/png;base64,{expected}"
+
+    image = Image(source=uri, media_type="image/png")
+    assert image.data is None
+
+    assert multimodal.image_to_anthropic(image) == {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": expected,
+        },
+    }
+    assert image.data == expected
+
+
+def test_anthropic_image_reads_local_path_without_network(tmp_path: Path) -> None:
+    """Local image files are read from disk, not fetched over HTTP."""
+    png_bytes = bytes.fromhex("89504e470d0a1a0a") + b"\x00" * 32
+    image_path = tmp_path / "test.png"
+    image_path.write_bytes(png_bytes)
+
+    image = Image(source=image_path, media_type="image/png")
+    assert image.data is None
+
+    expected = base64.b64encode(png_bytes).decode("utf-8")
+    assert multimodal.image_to_anthropic(image) == {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": expected,
+        },
+    }
+    assert image.data == expected
+
+
+def test_anthropic_image_accepts_raw_bytes() -> None:
+    """Raw byte image sources are encoded to base64."""
+    png_bytes = bytes.fromhex("89504e470d0a1a0a") + b"\x00" * 32
+    expected = base64.b64encode(png_bytes).decode("utf-8")
+
+    image = Image(source=png_bytes, media_type="image/png")
+    assert image.data is None
+
+    assert multimodal.image_to_anthropic(image) == {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": expected,
+        },
+    }
+    assert image.data == expected
+
+
+def test_anthropic_image_without_data_raises_clear_error(tmp_path: Path) -> None:
+    """A source that is neither data, a URL, a data URI, nor a readable file errors clearly."""
+    missing = SimpleNamespace(
+        source=tmp_path / "does-not-exist.png",
+        media_type="image/png",
+        data=None,
+    )
+    with pytest.raises(ValueError, match="Image data is missing for base64 encoding"):
+        multimodal.image_to_anthropic(missing)
+
+    bare_path = Image(source="nonexistent_photo.png", media_type="image/png")
+    with pytest.raises(ValueError, match="Image data is missing for base64 encoding"):
+        multimodal.image_to_anthropic(bare_path)
 
 
 def test_anthropic_multimodal_handles_pdf_urls_cache_control_and_audio() -> None:
